@@ -1,0 +1,145 @@
+yum install centos-release-gluster
+
+mkfs.xfs -i size=512 /dev/sdb1
+mkdir -p /bricks/brick1
+vi /etc/fstab
+   /dev/sdb1 /bricks/brick1 xfs defaults 1 2
+mount -a && mount
+
+yum install glusterfs-server
+systemctl enable glusterd
+systemctl start glusterd
+systemctl status glusterd
+
+Purpose
+
+This document is intended to give you a step by step guide to setting up GlusterFS for the first time. For this tutorial, we will assume you are using CentOS (other distributions and methods can be found in the new user guide, below). We also do not explain the steps in detail here, this guide is just to help you get it up and running as soon as possible. After you deploy GlusterFS by following these steps, we recommend that you read the GlusterFS Admin Guide to learn how to administer GlusterFS and how to select a volume type that fits your needs. Read the GlusterFS New User Guide for a more detailed explanation of the steps we took here. We want you to be successful in as short a time as possible.
+
+If you would like a more detailed walk through with instructions for installing using different methods (in local virtual machines, EC2 and baremetal) and different distributions, then have a look at the Getting Started with GlusterFS guide.
+
+Using Storage SIG Yum Repos
+
+To Use the RPMs from Storage SIG, you need to install the centos-release-gluster RPM as it will provide the required YUM repository files. This RPM is available from CentOS Extras.
+
+Example (for CentOS 7 / x86_64):
+
+# yum install centos-release-gluster
+
+Gluster provides different release streams called "Long Term Maintenance" (LTM) and "Short Term Maintenance" (STM). There are several centos-release-gluster packages available in CentOS Extras, by default the latest LTM release will be selected when installing centos-release-gluster. More details about the different Gluster releases can be found on the Release Schedule.
+
+Step 1 ¨C Have at least two nodes
+
+    CentOS 7 on two servers named "server1" and "server2"
+    A working network connection
+
+    At least two virtual disks, one for the OS installation (sda) and one to be used to serve GlusterFS storage (sdb). This will emulate a real world deployment, where you would want to separate GlusterFS storage from the OS install. 
+
+Note: GlusterFS stores its dynamically generated configuration files at /var/lib/glusterd, if at any point in time GlusterFS is unable to write to these files it will at minimum cause erratic behaviour for your system, or worse take your system offline completely. It is advisable to create separate partitions for directories such as /var/log to ensure this does not happen.
+
+Step 2 - Format and mount the bricks
+
+(on both nodes): Note: These examples are going to assume the brick is going to reside on /dev/sdb1.
+
+# mkfs.xfs -i size=512 /dev/sdb1
+# mkdir -p /bricks/brick1
+# vi /etc/fstab
+
+Add the following:
+
+/dev/sdb1 /bricks/brick1 xfs defaults 1 2
+
+Save the file and exit
+
+# mount -a && mount
+
+You should now see sdb1 mounted at /bricks/brick1
+
+Note: On CentOS 6 , you need to install xfsprogs package to be able to format an XFS file system
+
+# yum install xfsprogs
+
+Step 3 - Installing GlusterFS
+
+(on both servers) Install the software:
+
+# yum install glusterfs-server
+
+Start the GlusterFS management daemon (assuming CentOS 7 in our example, on CentOS 6, service output would be different):
+
+# systemctl enable glusterd
+ln -s '/usr/lib/systemd/system/glusterd.service' '/etc/systemd/system/multi-user.target.wants/glusterd.service'
+# systemctl start glusterd
+# systemctl status glusterd
+glusterd.service - GlusterFS, a clustered file-system server
+   Loaded: loaded (/usr/lib/systemd/system/glusterd.service; enabled)
+   Active: active (running) since Fri 2015-11-13 10:16:09 CET; 3s ago
+  Process: 25972 ExecStart=/usr/sbin/glusterd -p /var/run/glusterd.pid --log-level $LOG_LEVEL $GLUSTERD_OPTIONS (code=exited, status=0/SUCCESS)
+ Main PID: 25973 (glusterd)
+   CGroup: /system.slice/glusterd.service
+           ©¸©¤25973 /usr/sbin/glusterd -p /var/run/glusterd.pid --log-level INFO
+
+Storage SIG also provides other ecosystem packages (e.g. Samba) for Gluster. The package details can be found here
+
+Step 4 - Iptables configuration
+
+You can run gluster with iptables rules, but it's up to you to decide how you'll configure those rules. By default, glusterd will listen on tcp/24007 but opening that port isn't enough on the gluster nodes. Each time you add a brick, it will open a new port (that you'll be able to see with "gluster volume status")
+
+Depending on your design, it's probably better to have dedicated NIC for the gluster/storage traffic, and so "trust" that nic/subnet/gluster nodes through your netfilter solution (/etc/sysconfig/iptables for CentOS 6, and firewalld/firewall-cmd)
+
+Explaining how to configure iptables is out-of-scope here, but you can read useful information on the dedicated IPTables wiki page.
+
+Step 5 - Configure the trusted pool
+
+From "server1"
+
+# gluster peer probe server2
+
+Note: When using hostnames, the first server needs to be probed from one other server to set it's hostname.
+
+From "server2"
+
+# gluster peer probe server1
+
+Note: Once this pool has been established, only trusted members may probe new servers into the pool. A new server cannot probe the pool, it must be probed from the pool.
+
+Step 6 - Set up a GlusterFS volume
+
+On both server1 and server2:
+
+# mkdir /bricks/brick1/gv0
+
+From any single server:
+
+# gluster volume create gv0 replica 2 server1:/bricks/brick1/gv0 server2:/bricks/brick1/gv0
+# gluster volume start gv0
+
+Confirm that the volume shows "Started":
+
+# gluster volume info
+
+Note: If the volume is not started, clues as to what went wrong will be in log files under /var/log/glusterfs on one or both of the servers - usually in etc-glusterfs-glusterd.vol.log
+
+Step 7 - Testing the GlusterFS volume
+
+For this step, we will use one of the servers to mount the volume. Typically, you would do this from an external machine, known as a "client". Since using the method here would require additional packages to be installed on the client machine, we will use the servers as a simple place to test first.
+
+# mount -t glusterfs server1:/gv0 /mnt
+# for i in `seq -w 1 100`; do cp -rp /var/log/messages /mnt/copy-test-$i; done
+
+First, check the mount point:
+
+# ls -lA /mnt | wc -l
+
+You should see 100 files returned. Next, check the GlusterFS mount points on each server:
+
+# ls -lA /bricks/brick1/gv0
+
+You should see 100 per server using the method we listed here. Without replication, in a distribute only volume (not detailed here), you should see about 50 each.
+
+Wrap Up
+
+So, that's it, about as fast as it can be shown. Make sure to have a look at the Admin Guide and New User guide to help you get a deeper understanding, but this is a great start to have a place to test things out.
+
+This page is inspired from quick start guide of Gluster Community
+
+Refer Gluster Community documentation home page for more information. 
